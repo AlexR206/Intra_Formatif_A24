@@ -6,39 +6,45 @@
 
 <h1>Formulaire qui sert à rien</h1>
 <mat-card style="width: 700px; margin: auto; padding: 20px;">
-  <form >
+  <form [formGroup]="formGroup">
 
     <mat-form-field style="width: 100%">
         <mat-label>Nom</mat-label>
-        <input matInput type="text" placeholder="Nom et prénom" name="name" >
+        <input matInput type="text" placeholder="Nom et prénom" formControlName="name" >
         
     </mat-form-field>
 
     <mat-form-field style="width: 100%">
       <mat-label>Numéro de rue</mat-label>
-      <input matInput type="number" placeholder="5230" name="roadnumber">
-      
+      <input matInput type="number" placeholder="5230" formControlName="roadnumber">
+
     </mat-form-field>
 
     <mat-form-field style="width: 100%">
         <mat-label>Rue</mat-label>
-        <input matInput type="text" placeholder="Resther" name="rue">
+        <input matInput type="text" placeholder="Resther" formControlName="street">
     </mat-form-field>
 
     <mat-form-field style="width: 100%">
       <mat-label>Code Postal</mat-label>
-      <input matInput type="text" placeholder="H2J8B2" name="postalcode">
+      <input matInput type="text" placeholder="H2J8B2" formControlName="postalcode">
       
     </mat-form-field>
 
     <mat-form-field style="width: 100%">
       <mat-label>Commentaire</mat-label>
-      <textarea matInput placeholder="Votre commentaire" name="comments"></textarea>
-      
+      <textarea matInput placeholder="Votre commentaire" formControlName="comments"></textarea>
+
     </mat-form-field>
 
     <mat-card-actions align="end">
-      <button  mat-raised-button color="primary" >Acheter</button>
+      <button 
+        mat-raised-button 
+        color="primary" 
+        [disabled]="formGroup.invalid">
+        Acheter
+      </button>
     </mat-card-actions>
+
   </form>
 </mat-card>
