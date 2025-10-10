@@ -1,0 +1,441 @@
+# Quick orientation 
+
+* **Q1 Guards (3 pts)** — protect routes: auth & preference guard (redirects).
+* **Q2 SignalR (10 pts)** — real-time pizza app: groups, shared state via `PizzaManager`, server Hub methods, client HubConnection, events.
+* **Q3 Reactive Forms (7 pts)** — build form using `FormBuilder`, validators (built-in + custom), a form-level validator, disable submit button until valid.
+
+---
+
+# 1 — Guards (core ideas & quick checklist)
+
+**Goal:** Prevent navigation unless conditions pass.
+
+Key concepts:
+
+* `CanActivate` guards run before route activates.
+* Guards return:
+
+  * `true` → allow
+  * `UrlTree` → redirect (preferred, declarative)
+  * `false` → block (imperative nav if you call `router.navigate`)
+* Multiple guards listed in `canActivate: [authGuard, catGuard]` are executed **in order**; if one returns a UrlTree/false, the rest don’t run.
+
+Typical implementations:
+
+* `authGuard` — check `localStorage.getItem('user')` or a `UserService.isLogged()`:
+
+  ```ts
+  import { CanActivateFn, createUrlTreeFromSnapshot } from '@angular/router';
+  export const authGuard: CanActivateFn = (route, state) => {
+    const user = localStorage.getItem('user');
+    if (!user) return createUrlTreeFromSnapshot(route, ['/login']);
+    return true;
+  };
+  ```
+* `catGuard` — parse JSON and check property (watch names):
+
+  ```ts
+  const user = JSON.parse(localStorage.getItem('user')!);
+  if (!user || !user.prefercat) return createUrlTreeFromSnapshot(route, ['/dog']);
+  return true;
+  ```
+
+  **Important:** `localStorage.getItem()` returns a string — **must** `JSON.parse()` before using properties. Use the exact key name (e.g., `prefercat` vs `prefersCats`) consistently.
+
+Common mistakes:
+
+* Forget to `JSON.parse()` so checks always fail.
+* Guard uses wrong property name (`prefersCats` vs `prefercat`).
+* Not clearing/overwriting `localStorage` when switching test accounts.
+* Putting only `catGuard` on `/cat` without `authGuard`. Best: `canActivate: [authGuard, catGuard]`.
+
+Quick test steps:
+
+1. Put user JSON in localStorage (`Application > Local Storage`):
+   `{"username":"a","prefercat":true}`.
+2. Try protected route — ensure redirect behavior matches.
+
+Tip: You can use either `createUrlTreeFromSnapshot(...)` (recommended) or `inject(Router).navigate(...)` and return `false`.
+
+---
+
+# 2 — SignalR (core ideas & what to memorize)
+
+This is the big one. Learn the flow, event names, and mapping between Hub and client.
+
+## Core server concepts (Hub)
+
+* A Hub is a server class derived from `Hub`.
+* Useful properties:
+
+  * `Context.ConnectionId` — unique per connection (tab/browser instance).
+  * `Context.UserIdentifier` — usually your authenticated user id (set via auth).
+* Core methods:
+
+  * `Clients.All.SendAsync("EventName", data)` — broadcast to everyone.
+  * `Clients.Caller.SendAsync("EventName", data)` — to the current caller only.
+  * `Clients.Group(groupName).SendAsync("EventName", data)` — to all in a group.
+  * `Clients.User(userId).SendAsync(...)` — to user (may hit multiple connections).
+* Groups:
+
+  * `await Groups.AddToGroupAsync(Context.ConnectionId, groupName);`
+  * `await Groups.RemoveFromGroupAsync(Context.ConnectionId, groupName);`
+* Lifecycle:
+
+  * Override `OnConnectedAsync()` and `OnDisconnectedAsync()` for connect/disconnect logic (update counts, dictionaries, user lists).
+
+### Example (pizza):
+
+* `PizzaManager` holds arrays `Money[]`, `NbPizzas[]`, `PIZZA_PRICES[]`, `NbConnectedUsers`.
+* Hub methods used by client: `SelectChoice(choice)`, `UnselectChoice(choice)`, `AddMoney(choice)`, `BuyPizza(choice)`.
+* Hub pushes events to client: `"UpdateNbUsers"`, `"UpdatePizzaPrice"`, `"UpdateNbPizzasAndMoney"`, `"UpdateMoney"`.
+
+**Very important:** Event names and argument order must match exactly between server `.SendAsync("Event", args...)` and client `.on("Event", (arg1, arg2) => ...)`.
+
+Common pitfalls:
+
+* Sending wrong data with wrong event name (we saw pizza price vs money confusion).
+* Wrong argument order.
+* Forgetting to `.start()` connection on client, or adding `.on()` listeners **after** `.start()` in production may miss messages; best practice: attach `.on()` handlers **before** `.start()`.
+
+## Core client concepts (Angular)
+
+* Create connection:
+
+  ```ts
+  this.hubConnection = new signalR.HubConnectionBuilder()
+    .withUrl('http://localhost:5282/hubs/pizza', { accessTokenFactory: () => sessionStorage.getItem('token') })
+    .build();
+  ```
+* Listen for server events (must be before `.start()`):
+
+  ```ts
+  this.hubConnection.on("UpdateNbUsers", (n) => this.nbUsers = n);
+  this.hubConnection.on("UpdateNbPizzasAndMoney", (nb, money) => { this.nbPizzas = nb; this.money = money; });
+  ```
+* Start and call:
+
+  ```ts
+  this.hubConnection.start().then(()=> /*connected*/);
+  this.hubConnection.invoke('AddMoney', choice);
+  ```
+* Error to know: negotiation 404 means hub endpoint not mapped or wrong URL (`/tasks/negotiate` 404). Fix by ensuring `app.MapHub<YourHub>("/tasks");` in Program.cs and correct URL in client.
+
+## Debug checklist (SignalR)
+
+* Is the hub mapped in Program.cs? `app.MapHub<PizzaHub>("/hubs/pizza");`
+* Is the client URL exact? `http://localhost:5282/hubs/pizza`
+* Are `.on()` handlers registered before `.start()`?
+* Are event names and parameters aligned server↔client?
+* Use two browser tabs to verify group behavior.
+* Check browser console for negotiation / CORS / 404 errors.
+
+---
+
+# 3 — Reactive Forms (core ideas & what to memorize)
+
+Goal: Use `ReactiveFormsModule`, `FormBuilder` to create `FormGroup` and validators. Disable submit until `formGroup.valid`.
+
+Key pieces:
+
+* `FormBuilder` to create:
+
+  ```ts
+  this.formGroup = this.formBuilder.group({
+    name: ['', [Validators.required]],
+    roadnumber: ['', [Validators.required, Validators.min(1000), Validators.max(9999)]],
+    postalcode: ['', [Validators.pattern('^[A-Z][0-9][A-Z][ ]?[0-9][A-Z][0-9]$')]],
+    comments: ['', [minWordsValidator(10)]],
+  }, { validators: commentNotContainName()});
+  ```
+* Custom validator pattern:
+
+  ```ts
+  export function minWordsValidator(min: number): ValidatorFn {
+    return (control: AbstractControl) => {
+      const v = control.value;
+      if (!v) return null;   // optional
+      const words = v.trim().split(/\s+/);
+      return words.length >= min ? null : { notEnoughWords: true };
+    };
+  }
+  ```
+* Form-level validator (check comment does not contain name):
+
+  * Either return group error or set error on child control. Simpler: return `{ nameInComment: true }` on group and in template check `formGroup.hasError('nameInComment')` or show under `comments`.
+* HTML: link form, controls and disable button:
+
+  ```html
+  <form [formGroup]="formGroup">
+    <input formControlName="name">
+    <input formControlName="roadnumber" type="number">
+    <input formControlName="postalcode">
+    <textarea formControlName="comments"></textarea>
+    <button [disabled]="formGroup.invalid">Acheter</button>
+  </form>
+  ```
+* Show errors only if needed. Exam requires button disabled; showing errors is optional unless explicitly asked.
+
+Common pitfalls:
+
+* Using `split(' ')` may count empty tokens; better use `.trim().split(/\s+/)`.
+* Remember `Validators.pattern()` is available — you don’t have to write postal custom validator.
+* Attach form-level validators in `{ validators: yourFn }` not in control array.
+
+---
+
+# Final quick cheat-sheet (what to write in exam & test fast)
+
+## Guards
+
+* Implement `authGuard` and `catGuard`.
+* In routes:
+
+  ```ts
+  { path: 'cat', component: CatComponent, canActivate: [authGuard, catGuard] }
+  { path: 'home', component: HomeComponent, canActivate: [authGuard] }
+  ```
+* In `catGuard` do `JSON.parse(localStorage.getItem('user')!)` and check `prefercat`.
+
+## SignalR (pizza)
+
+* Ensure Program.cs has `builder.Services.AddSignalR();` and `app.MapHub<PizzaHub>("/hubs/pizza");`
+* PizzaHub: on connect call `_pizzaManager.AddUser()` and `Clients.All.SendAsync("UpdateNbUsers", _pizzaManager.NbConnectedUsers);` ; on disconnect *RemoveUser*.
+* Implement methods and send correct events:
+
+  * `SelectChoice(choice)` -> Groups.AddToGroupAsync(...), `Clients.Caller.SendAsync("UpdatePizzaPrice", price)`, `Clients.Caller.SendAsync("UpdateNbPizzasAndMoney", nb, money)`
+  * `AddMoney(choice)` -> `_pizzaManager.IncreaseMoney(choice)` then `Clients.Group(group).SendAsync("UpdateNbPizzasAndMoney", nb, money)` or `UpdateMoney` depending on spec.
+  * `BuyPizza(choice)` -> `_pizzaManager.BuyPizza(choice)` then `Clients.Group(...).SendAsync("UpdateNbPizzasAndMoney", nb, money)`
+* Client: `.on(...)` handlers before `.start()`, `.invoke('Method', arg)` to call server.
+
+## Reactive forms
+
+* `FormBuilder` build `formGroup` with validators.
+* Custom validator for comments word count; form-level validator for comment not containing name.
+* Disable submit with `[disabled]="formGroup.invalid"`.
+
+---
+
+# Rapid exam prep plan for tonight (2–3 hours)
+
+1. **30 min** — Guards: re-read docs, quickly implement minimal `authGuard` & `catGuard`, test with localStorage.
+2. **60 min** — SignalR core: review Hub/server code and client component; walk through one full scenario in two browser tabs (select pizza, add money, buy pizza). Fix any event-name mismatches.
+3. **30–45 min** — Reactive Form: finalize formGroup, check the validators run, ensure button disabled when `formGroup.invalid`.
+4. **15 min** — Smoke test: run app, open two tabs, test Guards, SignalR, Form; check console for errors.
+5. **Sleep** — get rest. (You’ll be sharper if rested.)
+
+---
+
+# Last-minute debug commands & checks
+
+* Check hub mapping: Program.cs contains `app.MapHub<YourHub>("/hubs/pizza");`
+* Client `.start()` error: inspect browser console for negotiate 404 — if so check route path.
+* In Angular console you can inspect the form validity:
+
+  ```js
+  // in console
+  ng.getComponent(document.querySelector('app-root')).formGroup.valid
+  ng.getComponent(document.querySelector('app-root')).formGroup.value
+  ```
+* When SignalR not updating client — confirm exact `SendAsync` name and parameters, and client `.on` uses same name/order.
+
+---
+
+
+-------------------------------------------------------------------------------------------------------------------------
+-------------------------------------------------------------------------------------------------------------------------
+-------------------------------------------------------------------------------------------------------------------------
+
+
+# Variants to be wary of for each exam topic
+
+Teachers like to tweak one small thing so you don’t memorize a single pattern — prepare for these variants.
+
+## Guards — common variants
+
+* **Role-based guard**: instead of `prefercat`, check `user.role === 'admin'`.
+* **CanActivateChild**: protect child routes (you must attach guard to parent route).
+* **CanDeactivate**: they may ask to return `false` if a form is dirty on leave.
+* **Token / Auth header**: guard checks a JWT in `localStorage` and maybe expiration.
+* **Route param based**: guard reads `route.params` to allow/deny (e.g., user id in URL).
+* **Multiple guards**: ensure you apply `canActivate: [authGuard, otherGuard]` (order matters).
+
+What to remember:
+
+* `localStorage.getItem()` returns string → `JSON.parse()` if reading properties.
+* Guards can return `true`, `false`, or a `UrlTree`.
+* `createUrlTreeFromSnapshot(...)` or `inject(Router).navigate(...)` both work — `UrlTree` is the idiomatic way.
+
+## SignalR — common variants
+
+* **Auth with token**: client `.withUrl(url, { accessTokenFactory: () => localStorage.getItem('token') })`
+* **Hub endpoint path** differences (`/hubs/pizza` vs `/pizza`) — check Program.cs mapping.
+* **Send to a single user** vs **send to connection id** (`Clients.User(userId)` vs `Clients.Client(connId)`).
+* **Groups by name** using `Groups.AddToGroupAsync(Context.ConnectionId, name)`; watch group name generations.
+* **Multiple parameters** in `SendAsync` — order matters: `SendAsync("Event", a, b, c)` ↔ `.on("Event", (a,b,c)=>{})`
+* **Client listeners must be registered BEFORE `.start()`** for production-safety (messages can be missed otherwise).
+* **Negotiate 404**: means wrong hub URL or hub not mapped; check logs and Program.cs.
+* **Lifetime issues**: remember to update counts in `OnConnectedAsync()` and `OnDisconnectedAsync()` and call `await base.OnConnectedAsync()` / `await base.OnDisconnectedAsync()`.
+
+What to remember:
+
+* Map hub on server: `app.MapHub<PizzaHub>("/hubs/pizza");`
+* Client: `.on("Event", handler)` then `.start()` then `.invoke("Method", arg)`
+* Exact event names + param order must match.
+
+## Reactive Forms — common variants
+
+* **FormArray** questions (list of repeated fields) — you might be asked to add/remove items from an array.
+* **Async validators** (e.g., unique username check) — return `Observable<ValidationErrors|null>`.
+* **updateOn: 'blur'** or `'submit'` variants.
+* **Form-level validator** vs control-level validator — they’ll ask cross-field logic like "confirm password" or "comment must not contain name".
+* **Show errors only after touched/dirty** — template checks: `&& formGroup.get('x')?.touched`.
+* **Counting words** variations: they might say “10 words” or “min 10 words ignoring extra spaces” — use `.trim().split(/\s+/)`.
+
+What to remember:
+
+* Validator returns `null` if valid OR an object (error key) if invalid.
+* Apply group validators as `{ validators: myGroupValidator }` in the `FormBuilder.group()` options.
+* Use `formGroup.invalid` to disable the button.
+
+---
+
+# Ultimate one-page cheat-sheet (copy/paste + memorize)
+
+Keep this in your head or on a single printed page.
+
+## Guards — minimal template
+
+`auth.guard.ts`
+
+```ts
+import { CanActivateFn, createUrlTreeFromSnapshot } from '@angular/router';
+
+export const authGuard: CanActivateFn = (route, state) => {
+  const user = localStorage.getItem('user');
+  if (!user) return createUrlTreeFromSnapshot(route, ['/login']);
+  return true;
+};
+```
+
+`cat.guard.ts` (only preference)
+
+```ts
+export const catGuard: CanActivateFn = (route, state) => {
+  const s = localStorage.getItem('user');
+  if (!s) return createUrlTreeFromSnapshot(route, ['/login']);
+  const user = JSON.parse(s);
+  if (!user.prefercat) return createUrlTreeFromSnapshot(route, ['/dog']);
+  return true;
+};
+```
+
+Routes:
+
+```ts
+{ path: 'cat', component: CatComponent, canActivate: [authGuard, catGuard] }
+{ path: 'home', component: HomeComponent, canActivate: [authGuard] }
+```
+
+## SignalR — minimal server/client patterns
+
+Server (Hub):
+
+```csharp
+public override async Task OnConnectedAsync() {
+  _pizzaManager.AddUser();
+  await Clients.All.SendAsync("UpdateNbUsers", _pizzaManager.NbConnectedUsers);
+  await base.OnConnectedAsync();
+}
+
+public async Task SelectChoice(PizzaChoice choice) {
+  string group = _pizzaManager.GetGroupName(choice);
+  await Groups.AddToGroupAsync(Context.ConnectionId, group);
+  await Clients.Caller.SendAsync("UpdatePizzaPrice", _pizzaManager.PIZZA_PRICES[(int)choice]);
+  await Clients.Caller.SendAsync("UpdateNbPizzasAndMoney",
+      _pizzaManager.NbPizzas[(int)choice], _pizzaManager.Money[(int)choice]);
+}
+```
+
+Client (Angular):
+
+```ts
+this.hubConnection = new signalR.HubConnectionBuilder()
+  .withUrl('http://localhost:5282/hubs/pizza')
+  .build();
+
+this.hubConnection.on('UpdateNbUsers', n => this.nbUsers = n);
+this.hubConnection.on('UpdatePizzaPrice', p => this.pizzaPrice = p);
+this.hubConnection.on('UpdateNbPizzasAndMoney', (n,m) => { this.nbPizzas=n; this.money=m; });
+
+this.hubConnection.start();
+this.hubConnection.invoke('AddMoney', choice);
+```
+
+Checklist if connection fails:
+
+* Hub mapping in Program.cs? (`app.MapHub<...>("/hubs/pizza");`)
+* Client URL exact match
+* `.on()` handlers before `.start()`
+* Check console for 404 negotiate → wrong path
+
+## Reactive Forms — minimal TS + validators
+
+Simple validators you must know:
+
+* postal pattern (built-in):
+
+```ts
+postalcode: ['', [Validators.pattern('^[A-Z][0-9][A-Z][ ]?[0-9][A-Z][0-9]$')]]
+```
+
+* min words custom:
+
+```ts
+export function minWordsValidator(min: number): ValidatorFn {
+  return (control: AbstractControl) => {
+    const v = control.value;
+    if (!v) return null;
+    const words = v.trim().split(/\s+/);
+    return words.length >= min ? null : { notEnoughWords: true };
+  }
+}
+```
+
+* form-level: comment must NOT contain name:
+
+```ts
+export function commentNotContainName(): ValidatorFn {
+  return (g: AbstractControl) => {
+    const name = g.get('name')?.value;
+    const comment = g.get('comments')?.value;
+    if (!name || !comment) return null;
+    return comment.toLowerCase().includes(name.toLowerCase()) ? { nameInComment: true } : null;
+  }
+}
+```
+
+Create form:
+
+```ts
+this.formGroup = this.formBuilder.group({
+  name: ['', Validators.required],
+  roadnumber: ['', [Validators.required, Validators.min(1000), Validators.max(9999)]],
+  postalcode: ['', [Validators.pattern('^[A-Z][0-9][A-Z][ ]?[0-9][A-Z][0-9]$')]],
+  comments: ['', [minWordsValidator(10)]]
+}, { validators: commentNotContainName() });
+```
+
+HTML: disable button:
+
+```html
+<button [disabled]="formGroup.invalid">Acheter</button>
+```
+
+Debugging quick checks:
+
+* `ng.getComponent(document.querySelector('app-root')).formGroup.value` — see values
+* `...formGroup.valid` — true/false
+* `...formGroup.get('comments')?.errors` — see error object
+
+---
