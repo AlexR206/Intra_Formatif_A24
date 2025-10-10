@@ -75,8 +75,8 @@ export class AppComponent {
 
   // Called when the user unselects their pizza type
   unselectChoice() {
-    this.selectedChoice = -1;
     this.hubConnection?.invoke("UnselectChoice", this.selectedChoice);
+    this.selectedChoice = -1;
   }
 
   // Adds money (2$) to the selected pizza group
